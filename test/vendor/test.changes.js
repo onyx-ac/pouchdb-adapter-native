@@ -982,8 +982,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _destroy (spec 03 task 7). See VENDORED.md.
-    it.skip('Kill database while listening to live changes', function (done) {
+    it('Kill database while listening to live changes', function (done) {
       var db = new PouchDB(dbs.name);
 
       db.changes({live: true})
@@ -1516,8 +1515,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _close (spec 03 task 7). See VENDORED.md.
-    it.skip('Closing db does not cause a crash if changes cancelled',
+    it('Closing db does not cause a crash if changes cancelled',
       function (done) {
       var db = new PouchDB(dbs.name);
       var called = 0;

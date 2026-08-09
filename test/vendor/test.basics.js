@@ -26,8 +26,7 @@ adapters.forEach(function (adapter) {
       db.name.should.equal(dbs.name);
     });
 
-    // Needs _destroy (spec 03 task 7). See VENDORED.md.
-    it.skip('4314 Create a pouch with + in name', function () {
+    it('4314 Create a pouch with + in name', function () {
       var db = new PouchDB(dbs.name + '+suffix');
       return db.info().then(function () {
         return db.destroy();
@@ -44,16 +43,14 @@ adapters.forEach(function (adapter) {
       }
     });
 
-    // Needs _destroy (spec 03 task 7). See VENDORED.md.
-    it.skip('4314 Create a pouch with urlencoded name', function () {
+    it('4314 Create a pouch with urlencoded name', function () {
       var db = new PouchDB(dbs.name + 'some%2Ftest');
       return db.info().then(function () {
         return db.destroy();
       });
     });
 
-    // Needs _destroy (spec 03 task 7). See VENDORED.md.
-    it.skip('4219 destroy a pouch', function () {
+    it('4219 destroy a pouch', function () {
       return new PouchDB(dbs.name).destroy({});
     });
 
@@ -236,16 +233,14 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _close (spec 03 task 7). See VENDORED.md.
-    it.skip('Close db', function (done) {
+    it('Close db', function (done) {
       var db = new PouchDB(dbs.name);
       db.info().then(function () {
         db.close(done);
       });
     });
 
-    // Needs _close (spec 03 task 7). See VENDORED.md.
-    it.skip('Close db with a promise', function () {
+    it('Close db with a promise', function () {
       var db = new PouchDB(dbs.name);
       return db.close();
     });
@@ -789,8 +784,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _close (spec 03 task 7). See VENDORED.md.
-    it.skip('update_seq persists', function () {
+    it('update_seq persists', function () {
       var db = new PouchDB(dbs.name);
       return db.post({ test: 'somestuff' }).then(function () {
         return db.close();
@@ -862,8 +856,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _destroy (spec 03 task 7). See VENDORED.md.
-    it.skip('Create a db with a reserved name', function () {
+    it('Create a db with a reserved name', function () {
       var db = new PouchDB('__proto__');
       return db.info().then(function () {
         return db.destroy();
@@ -919,11 +912,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _destroy (spec 03 task 7) - the callback-style call site doesn't check
-    // `err` before proceeding, so with _destroy unimplemented this hangs instead of
-    // erroring cleanly, same pattern as the _allDocs-dependent timeouts. _allDocs
-    // itself is implemented now (task 4) and no longer what blocks this test.
-    it.skip('Fail to fetch a doc after db was deleted', function (done) {
+    it('Fail to fetch a doc after db was deleted', function (done) {
       var db = new PouchDB(dbs.name);
       var db2 = new PouchDB(dbs.name);
       var doc = { _id: 'foodoc' };
@@ -946,8 +935,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _destroy (spec 03 task 7), same reason as the previous test.
-    it.skip('Fail to fetch a doc after db was deleted', function (done) {
+    it('Fail to fetch a doc after db was deleted', function (done) {
       var db = new PouchDB(dbs.name);
       var db2 = new PouchDB(dbs.name);
       var doc = { _id: 'foodoc' };
@@ -1178,8 +1166,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _destroy (spec 03 task 7). See VENDORED.md.
-    it.skip('replace PouchDB.destroy() (express-pouchdb#203)', function (done) {
+    it('replace PouchDB.destroy() (express-pouchdb#203)', function (done) {
       var old = PouchDB.destroy;
       PouchDB.destroy = function (name, callback) {
         var db = new PouchDB(name);
@@ -1241,8 +1228,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _close (spec 03 task 7). See VENDORED.md.
-    it.skip('test info() after db close', function () {
+    it('test info() after db close', function () {
       var db = new PouchDB(dbs.name);
       return db.close().then(function () {
         return db.info().catch(function (err) {
@@ -1251,8 +1237,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _close (spec 03 task 7). See VENDORED.md.
-    it.skip('test get() after db close', function () {
+    it('test get() after db close', function () {
       var db = new PouchDB(dbs.name);
       return db.close().then(function () {
         return db.get('foo').catch(function (err) {
@@ -1261,8 +1246,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _close (spec 03 task 7). See VENDORED.md.
-    it.skip('test close() after db close', function () {
+    it('test close() after db close', function () {
       var db = new PouchDB(dbs.name);
       return db.close().then(function () {
         return db.close().catch(function (err) {

@@ -1,6 +1,6 @@
 import { createError, MISSING_DOC, REV_CONFLICT } from 'pouchdb-errors';
 import { parseDoc } from 'pouchdb-adapter-utils';
-import { isDeleted, isLocalId, merge, revExists, winningRev } from 'pouchdb-merge';
+import { compactTree, isDeleted, isLocalId, merge, revExists, traverseRevTree, winningRev } from 'pouchdb-merge';
 import { adapterFun, filterChange, uuid } from 'pouchdb-utils';
 import { CONTRACT_VERSION } from './contract.js';
 import type { BridgeError, Carrier, StoredDocWire } from './contract.js';
@@ -213,6 +213,21 @@ function rootIsMissing(docInfo: ParsedDoc): boolean {
   return docInfo.metadata.rev_tree[0].ids[1].status === 'missing';
 }
 
+/** Deletes bodies for revisions `merge()` just stemmed out of a tree, storing the
+ * rewritten tree alongside - the active half of `revs_limit`. `merge()`'s own
+ * tree-shape stemming (already wired into `_bulkDocs`) only prunes the tree
+ * structure; without this, old bodies stay reachable by explicit rev forever. */
+async function stemBodies(
+  carrier: Carrier,
+  dbName: string,
+  id: string,
+  revs: readonly string[],
+  tree: unknown,
+): Promise<void> {
+  if (revs.length === 0) return;
+  await call(carrier, 'compact', [dbName, id, revs, JSON.stringify(tree)]);
+}
+
 function buildWriteOp(
   docInfo: ParsedDoc,
   winningRevId: string,
@@ -246,6 +261,14 @@ export function NativeAdapter(options: NativeAdapterOptions) {
       const carrier = options.carrier;
       const dbName: string = opts.name;
       const revsLimit: number = opts.revs_limit || 1000;
+      // Real disk-based PouchDB adapters implement `auto_compaction` themselves
+      // (pouchdb-core@9's own `_compact` is explicit-`db.compact()`-only, no
+      // automatic wiring) - compacting after every write down to leaves only,
+      // stronger than `merge()`'s revs_limit-bounded stemming. Confirmed against
+      // the vendored `4372 ... with auto_compaction ...` case, which expects a
+      // stemmed-out revision gone even though it's still within the revs_limit
+      // window that a plain `merge()` stem would have kept.
+      const autoCompaction: boolean = !!opts.auto_compaction;
       this.carrier = carrier;
 
       this._id = (idCallback: Callback): void => {
@@ -412,7 +435,12 @@ export function NativeAdapter(options: NativeAdapterOptions) {
               else byId.set(id, [entry]);
             }
 
-            const ops: { entry: Entry; op: ReturnType<typeof buildWriteOp> }[] = [];
+            const ops: {
+              entry: Entry;
+              op: ReturnType<typeof buildWriteOp>;
+              stemmedRevs: string[];
+              tree: unknown;
+            }[] = [];
 
             for (const [id, group] of byId) {
               const existing = existingTrees.get(id);
@@ -436,7 +464,19 @@ export function NativeAdapter(options: NativeAdapterOptions) {
                     if (bulkOpts.was_delete && deleted) {
                       throw createError(MISSING_DOC, 'deleted');
                     }
-                    ops.push({ entry, op: buildWriteOp(docInfo, winning, deleted, null) });
+                    // auto_compaction compacts to leaves-only on every write -
+                    // strictly more than merge()'s revs_limit-bounded stemming, and
+                    // safe to concat (compactTree only touches nodes still
+                    // 'available', so it never re-targets an already-stemmed rev).
+                    const stemmedRevs = autoCompaction
+                      ? merged.stemmedRevs.concat(compactTree({ rev_tree: merged.tree }))
+                      : merged.stemmedRevs;
+                    ops.push({
+                      entry,
+                      op: buildWriteOp(docInfo, winning, deleted, null),
+                      stemmedRevs,
+                      tree: merged.tree,
+                    });
                     results[entry.index] = { ok: true, id, rev: docInfo.metadata.rev };
                     prevMeta = { rev_tree: merged.tree, winningRev: winning, deleted };
                   } else {
@@ -476,7 +516,15 @@ export function NativeAdapter(options: NativeAdapterOptions) {
                     const winningDeleted = isDeleted(docInfo.metadata, winning);
                     const newRevDeleted = newRev === winning ? winningDeleted : isDeleted(docInfo.metadata, newRev);
 
-                    ops.push({ entry, op: buildWriteOp(docInfo, winning, newRevDeleted, previousWinningRev) });
+                    const stemmedRevs = autoCompaction
+                      ? merged.stemmedRevs.concat(compactTree({ rev_tree: merged.tree }))
+                      : merged.stemmedRevs;
+                    ops.push({
+                      entry,
+                      op: buildWriteOp(docInfo, winning, newRevDeleted, previousWinningRev),
+                      stemmedRevs,
+                      tree: merged.tree,
+                    });
                     results[entry.index] = { ok: true, id, rev: newRev };
                     prevMeta = { rev_tree: merged.tree, winningRev: winning, deleted: winningDeleted };
                   }
@@ -493,12 +541,19 @@ export function NativeAdapter(options: NativeAdapterOptions) {
               ])) as (unknown | null)[];
               // null means that op's expectedPrevWinningRev had gone stale by the
               // time bulkWrite ran (a concurrent writer landed first) - the
-              // optimistic success result set above was wrong, fix it up.
+              // optimistic success result set above was wrong, fix it up. Only
+              // delete stemmed-out bodies for ops that actually committed - doing
+              // so for a rejected op would delete bodies still reachable from the
+              // tree that's actually persisted (the concurrent writer's).
+              const stemTasks: Promise<void>[] = [];
               writeResults.forEach((writeResult, i) => {
                 if (writeResult === null) {
                   results[ops[i].entry.index] = createError(REV_CONFLICT);
+                } else if (ops[i].stemmedRevs.length > 0) {
+                  stemTasks.push(stemBodies(carrier, dbName, ops[i].op.id!, ops[i].stemmedRevs, ops[i].tree));
                 }
               });
+              await Promise.all(stemTasks);
             }
           }
 
@@ -730,10 +785,45 @@ export function NativeAdapter(options: NativeAdapterOptions) {
         },
       );
 
-      this._doCompaction = notImplemented('_doCompaction', 'spec 03 task 7');
+      // `compactDocument(docId, maxHeight, cb)` (called by both `db.compact()`'s
+      // core-provided whole-db loop and a direct `db.compactDocument()` call)
+      // already fetched the tree via `_getRevisionTree` and computed exactly which
+      // revs are further than `maxHeight` from a leaf - we only get the candidate
+      // rev list here, not the tree, so it's re-fetched and stemmed in place with
+      // `pouchdb-merge`'s `traverseRevTree`, the same in-place-mutation technique
+      // `compactTree()` itself uses (just scoped to these specific revs instead of
+      // "every non-leaf node").
+      this._doCompaction = (docId: string, revs: string[], compactionCallback: Callback): void => {
+        runAsync(compactionCallback, async () => {
+          if (revs.length === 0) return undefined;
+          const [entry] = (await call(carrier, 'getRevTrees', [dbName, [docId]])) as RevTreeEntryWire[];
+          if (!entry.tree) return undefined; // doc vanished concurrently - nothing to compact
+          const tree = JSON.parse(entry.tree);
+          const revSet = new Set(revs);
+          traverseRevTree(tree, (isLeaf, pos, revHash, ctx, opts) => {
+            if (revSet.has(`${pos}-${revHash}`)) opts.status = 'missing';
+          });
+          await stemBodies(carrier, dbName, docId, revs, tree);
+          return undefined;
+        });
+      };
       this._getAttachment = notImplemented('_getAttachment', 'spec 03 task 6');
-      this._destroy = notImplemented('_destroy', 'spec 03 task 7');
-      this._close = notImplemented('_close', 'spec 03 task 7');
+      this._destroy = (destroyOpts: any, destroyCallback: Callback): void => {
+        if (typeof destroyOpts === 'function') destroyCallback = destroyOpts;
+        runAsync(destroyCallback, async () => {
+          await call(carrier, 'destroy', [dbName]);
+          return { ok: true };
+        });
+      };
+      // Matters for real on RocksDB - closes that db's actual native handle
+      // (`RocksDbDocumentStore.close`), not just a JS-side flag; skipping the
+      // crossing here would leak the file handle.
+      this._close = (closeCallback: Callback): void => {
+        runAsync(closeCallback, async () => {
+          await call(carrier, 'close', [dbName]);
+          return undefined;
+        });
+      };
 
       callback(null, this);
     }

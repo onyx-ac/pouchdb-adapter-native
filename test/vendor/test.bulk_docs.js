@@ -1074,9 +1074,7 @@ adapters.forEach(function (adapter) {
       }).catch(done);
     });
 
-    // Needs active old-revision-body deletion, not just tree stemming - that's
-    // compaction territory (spec 03 task 7). See VENDORED.md.
-    it.skip('4372 revs_limit deletes old revisions of the doc', function (done) {
+    it('4372 revs_limit deletes old revisions of the doc', function (done) {
 
       // We only implement revs_limit locally
       if (adapter === 'http') {
@@ -1113,8 +1111,7 @@ adapters.forEach(function (adapter) {
       }).catch(done);
     });
 
-    // Needs active old-revision-body deletion (spec 03 task 7). See VENDORED.md.
-    it.skip('4372 revs_limit with auto_compaction deletes old revisions of the doc', async function () {
+    it('4372 revs_limit with auto_compaction deletes old revisions of the doc', async function () {
       // We only implement revs_limit locally
       if (adapter === 'http') {
         return;

@@ -29,8 +29,20 @@ declare module 'pouchdb-merge' {
   }
 
   export function merge(tree: RevTree, path: RevTreePath, depth: number): MergeResult;
+  /** Marks every non-leaf 'available' node 'missing', in place, and returns the
+   * cut revs - "compact down to leaves only", the semantics `auto_compaction`
+   * needs (stronger than `merge()`'s depth-bounded stemming). */
+  export function compactTree(metadata: { rev_tree: RevTree }): string[];
   export function winningRev(metadata: DocMetadata): string;
   export function isDeleted(metadata: DocMetadata, rev?: string): boolean;
   export function revExists(tree: RevTree, rev: string): boolean;
   export function isLocalId(id: string): boolean;
+
+  /** Walks every node once, root to leaf; `opts` is the tree's own node object
+   * (`tree[1]`), not a copy - mutating it (e.g. `opts.status = 'missing'`) rewrites
+   * the tree in place. Return value becomes `ctx` for that node's children. */
+  export function traverseRevTree(
+    tree: RevTree,
+    callback: (isLeaf: boolean, pos: number, revHash: string, ctx: unknown, opts: Record<string, unknown>) => unknown,
+  ): void;
 }

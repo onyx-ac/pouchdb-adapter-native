@@ -887,8 +887,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _close (spec 03 task 7). See VENDORED.md.
-    it.skip('test after db close', function () {
+    it('test after db close', function () {
       var db = new PouchDB(dbs.name);
       return db.close().then(function () {
         return db.allDocs().catch(function (err) {
