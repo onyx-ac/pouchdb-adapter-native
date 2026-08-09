@@ -32,6 +32,9 @@
     "adapter",
     "docstack"
   ],
+  "dependencies": {
+    "pouchdb-errors": "^9.0.0"
+  },
   "devDependencies": {
     "typescript": "^5.7.3",
     "pouchdb-core": "^9.0.0",

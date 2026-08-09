@@ -7,6 +7,7 @@ const { createFakeCarrier } = require('./fake-carrier.js');
 chai.use(chaiAsPromised);
 global.should = chai.should();
 global.assert = chai.assert;
+global.testUtils = require('./testUtils.js');
 
 // The adapter (src/index.ts) builds to ESM (tsconfig: module esnext); this file is
 // CommonJS (test/package.json: "type": "commonjs") so upstream's vendored test.*.js

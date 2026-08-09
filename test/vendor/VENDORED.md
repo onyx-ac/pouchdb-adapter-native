@@ -15,6 +15,7 @@ CouchDB `http` target in this project.
 | File | Vendored from | Modifications |
 | --- | --- | --- |
 | `test.aa.setup.js` | `apache/pouchdb`, `master`, `tests/integration/test.aa.setup.js` (fetched 2026-08-09) | `require('../../packages/node_modules/pouchdb/package.json')` → `require('pouchdb-core/package.json')` — the upstream path only resolves inside the pouchdb monorepo; we depend on `pouchdb-core` directly, not the `pouchdb` meta-package. |
+| `test.local_docs.js` | `apache/pouchdb`, `master`, `tests/integration/test.local_docs.js` (fetched 2026-08-09) | `adapters` trimmed from `['http', 'local']` to `['local']` only, per the rule above. No other changes — passes as-is against `_getLocal`/`_putLocal`/`_removeLocal` (spec 03 task 2), including the `"0-N"`/`"0-0"` rev format and conflict-detection semantics this task added to the `putLocal`/`removeLocal` native contract specifically to make this file pass unmodified. |
 
 Files land here as the adapter methods they exercise are implemented (spec 03 tasks
 2+), not all at once — task 1 only proves the harness runs a real upstream file at

@@ -37,6 +37,12 @@ function createFakeCarrier() {
     return error;
   }
 
+  function conflict(message) {
+    const error = new Error(message);
+    error.code = 'CONFLICT';
+    return error;
+  }
+
   function notify(dbName, docs) {
     const set = subscribers.get(dbName);
     if (!set || docs.length === 0) return;
@@ -229,21 +235,30 @@ function createFakeCarrier() {
     getLocal([db, id]) {
       const d = existingDb(db);
       const record = d && d.local.get(id);
-      return record ? record.body : null;
+      return record ? { rev: record.rev, body: record.body } : null;
     },
 
-    putLocal([db, id, doc]) {
+    putLocal([db, id, doc, prevRev]) {
       const d = dbFor(db);
       const existing = d.local.get(id);
-      const nextRevNumber = (existing ? parseInt(existing.rev.split('-')[0], 10) || 0 : 0) + 1;
-      const rev = `${nextRevNumber}-local`;
+      const currentRev = existing ? existing.rev : undefined;
+      if (currentRev !== (prevRev || undefined)) {
+        throw conflict(`local doc conflict: ${db}/${id} (expected rev ${prevRev}, found ${currentRev})`);
+      }
+      const nextRevNumber = (existing ? parseInt(existing.rev.split('-')[1], 10) || 0 : 0) + 1;
+      const rev = `0-${nextRevNumber}`;
       d.local.set(id, { rev, body: doc });
       return rev;
     },
 
-    removeLocal([db, id]) {
+    removeLocal([db, id, prevRev]) {
       const d = existingDb(db);
-      if (d) d.local.delete(id);
+      const existing = d && d.local.get(id);
+      if (!existing) throw notFound(`local doc not found: ${db}/${id}`);
+      if (existing.rev !== prevRev) {
+        throw conflict(`local doc conflict: ${db}/${id} (expected rev ${prevRev}, found ${existing.rev})`);
+      }
+      d.local.delete(id);
       return null;
     },
 
@@ -274,6 +289,7 @@ function createFakeCarrier() {
 
   function mapError(error) {
     if (error && error.code === 'NOT_FOUND') return { code: 'NOT_FOUND', message: error.message };
+    if (error && error.code === 'CONFLICT') return { code: 'CONFLICT', message: error.message };
     if (error instanceof TypeError || error instanceof RangeError) {
       return { code: 'INVALID_ARGUMENT', message: error.message };
     }
