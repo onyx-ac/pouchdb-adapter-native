@@ -162,7 +162,14 @@ function createFakeCarrier() {
         return opts.deleted || !deleted;
       });
 
-      const totalRows = filtered.length;
+      // total_rows is always the whole database's non-deleted doc count,
+      // independent of any startkey/endkey/keys restriction - matches CouchDB's
+      // own _all_docs semantics (only rows/offset are affected by the query).
+      let totalRows = 0;
+      for (const record of d.docs.values()) {
+        const winning = record.revisions.get(record.winningRev);
+        if (!winning || !winning.deleted) totalRows++;
+      }
       const skip = opts.skip || 0;
       const skipped = filtered.slice(skip);
       const paged = opts.limit != null ? skipped.slice(0, opts.limit) : skipped;
@@ -336,7 +343,23 @@ function createFakeCarrier() {
   /** Not part of the envelope (ADR-0002's carve-out, same as `StorageDispatcher.kt`'s
    * direct passthroughs) - a live-changes listener, not a request/response call. */
   carrier.subscribeChanges = function subscribeChanges(db, since, listener) {
-    dbFor(db);
+    const d = dbFor(db);
+    // Snapshot anything already committed past `since` synchronously (so nothing
+    // written between now and the live listener registration just below can be
+    // missed or double-delivered), but defer actually calling `listener` for it to
+    // a microtask: callers (PouchDB core's Changes class) attach their own
+    // 'change'/'complete' listeners via a chained .on() *after* this function
+    // already returns, so replaying synchronously - within the same call - would
+    // fire before anything is listening and silently drop every replayed event.
+    const replay = [];
+    for (const [seq, id] of d.bySeq) {
+      if (seq <= since) continue;
+      const record = d.docs.get(id);
+      if (!record) continue;
+      const winning = record.revisions.get(record.winningRev);
+      replay.push(toStoredDoc(id, record.winningRev, record.seq, winning));
+    }
+
     let set = subscribers.get(db);
     if (!set) {
       set = new Set();
@@ -346,6 +369,11 @@ function createFakeCarrier() {
       if (doc.seq > since) listener(doc);
     };
     set.add(wrapped);
+
+    queueMicrotask(() => {
+      for (const doc of replay) listener(doc);
+    });
+
     return function unsubscribe() {
       set.delete(wrapped);
     };

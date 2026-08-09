@@ -489,8 +489,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _changes (spec 03 task 4). See VENDORED.md.
-    it.skip('Remove doc, no callback', function (done) {
+    it('Remove doc, no callback', function (done) {
       var db = new PouchDB(dbs.name);
       var changes = db.changes({
         live: true,
@@ -832,8 +831,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _allDocs (spec 03 task 4). See VENDORED.md.
-    it.skip('#4126 should not store raw Dates', function () {
+    it('#4126 should not store raw Dates', function () {
       var date = new Date();
       var date2 = new Date();
       var date3 = new Date();
@@ -921,9 +919,10 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _allDocs (spec 03 task 4) - callback-style call site doesn't check
-    // `err`, so it hangs rather than erroring cleanly (same pattern as
-    // test.bulk_docs.js's "Test multiple bulkdocs"). See VENDORED.md.
+    // Needs _destroy (spec 03 task 7) - the callback-style call site doesn't check
+    // `err` before proceeding, so with _destroy unimplemented this hangs instead of
+    // erroring cleanly, same pattern as the _allDocs-dependent timeouts. _allDocs
+    // itself is implemented now (task 4) and no longer what blocks this test.
     it.skip('Fail to fetch a doc after db was deleted', function (done) {
       var db = new PouchDB(dbs.name);
       var db2 = new PouchDB(dbs.name);
@@ -947,7 +946,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _allDocs (spec 03 task 4), same reason as the previous test. See VENDORED.md.
+    // Needs _destroy (spec 03 task 7), same reason as the previous test.
     it.skip('Fail to fetch a doc after db was deleted', function (done) {
       var db = new PouchDB(dbs.name);
       var db2 = new PouchDB(dbs.name);
@@ -991,8 +990,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _allDocs (spec 03 task 4). See VENDORED.md.
-    it.skip('Test doc with percent in ID', function () {
+    it('Test doc with percent in ID', function () {
       var db = new PouchDB(dbs.name);
       var doc = {
         foo: 'bar',
@@ -1366,8 +1364,7 @@ adapters.forEach(function (adapter) {
       });
     }
 
-    // Needs _allDocs (spec 03 task 4). See VENDORED.md.
-    it.skip('#9094 should update total_rows when doc is put with an attachment', async () => {
+    it('#9094 should update total_rows when doc is put with an attachment', async () => {
       // given
       const db = new PouchDB(dbs.name);
       await db.put({ _id:'foo', _attachments:{ 'simple.txt':{ content_type:'text/plain', data:'helo' } } });
@@ -1376,8 +1373,7 @@ adapters.forEach(function (adapter) {
       total_rows.should.equal(1);
     });
 
-    // Needs _allDocs (spec 03 task 4). See VENDORED.md.
-    it.skip('#9094 should update total_rows when doc is posted with an attachment', async () => {
+    it('#9094 should update total_rows when doc is posted with an attachment', async () => {
       // given
       const db = new PouchDB(dbs.name);
       await db.post({ _attachments:{ 'simple.txt':{ content_type:'text/plain', data:'helo' } } });

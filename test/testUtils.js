@@ -2,6 +2,7 @@
 
 const pouchdbErrors = require('pouchdb-errors');
 const pouchdbUtils = require('pouchdb-utils');
+const pouchdbBinaryUtils = require('pouchdb-binary-utils');
 
 /**
  * Port of `apache/pouchdb`'s `tests/integration/utils.js` (`testUtils`), scoped to
@@ -44,6 +45,25 @@ testUtils.isSafari = function () {
 };
 testUtils.isCouchMaster = function () {
   return false;
+};
+
+// Real `pouchdb-binary-utils` exports, same ones upstream's `pouchUtils.btoa`/`atob`
+// point at.
+testUtils.btoa = pouchdbBinaryUtils.btoa;
+testUtils.atob = pouchdbBinaryUtils.atob;
+
+// Wraps a callback-style function as one returning a promise. Ported verbatim from
+// upstream.
+testUtils.promisify = function (fun, context) {
+  return function (...args) {
+    return new Promise((resolve, reject) => {
+      args.push((err, res) => {
+        if (err) return reject(err);
+        return resolve(res);
+      });
+      fun.apply(context, args);
+    });
+  };
 };
 
 // Put doc after prevRev (so that doc is a child of prevDoc in rev_tree). Doc must

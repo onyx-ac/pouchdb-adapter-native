@@ -42,5 +42,23 @@ export interface BridgeError {
 /**
  * The only host-specific code in the system. WebView: WebMessageListener. Headless:
  * one bound Zipline suspending function. Everything above is identical (ADR-0002).
+ *
+ * `subscribeChanges` can't cross as a `Promise<BridgeResponse>` - it's a live push
+ * subscription, not a request/response call - so it isn't dispatched through the
+ * envelope the way every other method is. It's attached directly on the carrier
+ * object instead, same carve-out `StorageDispatcher.kt`'s `DISPATCHED_METHODS` split
+ * already makes on the Kotlin side.
  */
-export type Carrier = (req: BridgeRequest) => Promise<BridgeResponse>;
+export interface Carrier {
+  (req: BridgeRequest): Promise<BridgeResponse>;
+  subscribeChanges?(db: string, since: number, listener: (change: StoredDocWire) => void): () => void;
+}
+
+export interface StoredDocWire {
+  id: string;
+  rev: string;
+  seq: number;
+  deleted: boolean;
+  body?: Record<string, unknown> | null;
+  conflicts?: string[];
+}

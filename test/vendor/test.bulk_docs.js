@@ -247,10 +247,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _allDocs (spec 03 task 4) - the callback-style call site doesn't check
-    // `err` before reading `result.total_rows`, so with _allDocs unimplemented this
-    // times out instead of erroring cleanly. See VENDORED.md.
-    it.skip('Test multiple bulkdocs', function (done) {
+    it('Test multiple bulkdocs', function (done) {
       var db = new PouchDB(dbs.name);
       db.bulkDocs({ docs: authors }, function () {
         db.bulkDocs({ docs: authors }, function () {
@@ -262,8 +259,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _allDocs (spec 03 task 4). See VENDORED.md.
-    it.skip('#2935 new_edits=false correct number', function () {
+    it('#2935 new_edits=false correct number', function () {
       var docs = [
         {
           "_id": "EE35E",
@@ -293,8 +289,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _allDocs (spec 03 task 4). See VENDORED.md.
-    it.skip('#2935 new_edits=false correct number 2', function () {
+    it('#2935 new_edits=false correct number 2', function () {
       var docs = [
         {
           "_id": "EE35E",
@@ -417,8 +412,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _allDocs (spec 03 task 4). See VENDORED.md.
-    it.skip('Deleting _local docs with bulkDocs' , function () {
+    it('Deleting _local docs with bulkDocs' , function () {
       var db = new PouchDB(dbs.name);
 
       var rev1;
@@ -584,9 +578,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _changes (spec 03 task 4) - hangs on the 'complete' event that never
-    // fires, rather than erroring. See VENDORED.md.
-    it.skip('Testing successive new_edits to the same doc, different content',
+    it('Testing successive new_edits to the same doc, different content',
       function (done) {
 
       var db = new PouchDB(dbs.name);
@@ -695,8 +687,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _allDocs (spec 03 task 4). See VENDORED.md.
-    it.skip('Deletion with new_edits=false', function () {
+    it('Deletion with new_edits=false', function () {
 
       var db = new PouchDB(dbs.name);
       var doc1 = {
@@ -727,8 +718,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _allDocs (spec 03 task 4). See VENDORED.md.
-    it.skip('Deletion with new_edits=false, no history', function () {
+    it('Deletion with new_edits=false, no history', function () {
 
       var db = new PouchDB(dbs.name);
       var doc1 = {
@@ -755,8 +745,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _allDocs (spec 03 task 4). See VENDORED.md.
-    it.skip('Modification with new_edits=false, no history', function () {
+    it('Modification with new_edits=false, no history', function () {
 
       var db = new PouchDB(dbs.name);
       var doc1 = {
@@ -781,8 +770,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _allDocs (spec 03 task 4). See VENDORED.md.
-    it.skip('Deletion with new_edits=false, no history, no revisions', function () {
+    it('Deletion with new_edits=false, no history, no revisions', function () {
 
       var db = new PouchDB(dbs.name);
       var doc = {
@@ -1171,8 +1159,7 @@ adapters.forEach(function (adapter) {
       });
     });
 
-    // Needs _allDocs (spec 03 task 4). See VENDORED.md.
-    it.skip('5793 bulk docs accepts _conflicts when new_edits=false', function () {
+    it('5793 bulk docs accepts _conflicts when new_edits=false', function () {
       var db = new PouchDB(dbs.name);
       var newdoc = {
         '_id': 'foobar',

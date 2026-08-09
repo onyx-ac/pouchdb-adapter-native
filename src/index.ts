@@ -1,9 +1,9 @@
 import { createError, MISSING_DOC, REV_CONFLICT } from 'pouchdb-errors';
 import { parseDoc } from 'pouchdb-adapter-utils';
 import { isDeleted, isLocalId, merge, revExists, winningRev } from 'pouchdb-merge';
-import { uuid } from 'pouchdb-utils';
+import { filterChange, uuid } from 'pouchdb-utils';
 import { CONTRACT_VERSION } from './contract.js';
-import type { BridgeError, Carrier } from './contract.js';
+import type { BridgeError, Carrier, StoredDocWire } from './contract.js';
 import type { ParsedDoc } from 'pouchdb-adapter-utils';
 import type { DocMetadata } from 'pouchdb-merge';
 
@@ -19,15 +19,6 @@ const ADAPTER_NAME = 'native';
 const INSTANCE_ID_LOCAL_DOC = '_local/instanceId';
 
 type Callback = (err: Error | null, result?: unknown) => void;
-
-interface StoredDocWire {
-  id: string;
-  rev: string;
-  seq: number;
-  deleted: boolean;
-  body?: Record<string, unknown> | null;
-  conflicts?: string[];
-}
 
 interface RevTreeEntryWire {
   id: string;
@@ -45,6 +36,38 @@ interface StoreInfoWire {
 interface LocalDocWire {
   rev: string;
   body: Record<string, unknown>;
+}
+
+interface AllDocsOptionsWire {
+  startkey?: string;
+  endkey?: string;
+  inclusiveEnd?: boolean;
+  keys?: string[];
+  limit?: number;
+  skip?: number;
+  descending?: boolean;
+  includeBody?: boolean;
+  includeConflicts?: boolean;
+  deleted?: boolean;
+}
+
+interface AllDocsResultWire {
+  totalRows: number;
+  offset: number;
+  rows: StoredDocWire[];
+}
+
+interface ChangesOptionsWire {
+  since?: number;
+  limit?: number;
+  descending?: boolean;
+  includeBody?: boolean;
+  docIds?: string[];
+}
+
+interface ChangesResultWire {
+  lastSeq: number;
+  results: StoredDocWire[];
 }
 
 let requestCounter = 0;
@@ -117,6 +140,51 @@ function localDocBody(doc: Record<string, unknown>): Record<string, unknown> {
     body[key] = doc[key];
   }
   return body;
+}
+
+/** Shapes a wire doc back into PouchDB's own doc convention (`_id`/`_rev`/`_deleted`
+ * folded into the body), the same conversion `_get` already did inline. */
+function toPouchDoc(doc: StoredDocWire): Record<string, unknown> {
+  const result: Record<string, unknown> = Object.assign({}, doc.body, { _id: doc.id, _rev: doc.rev });
+  if (doc.deleted) result._deleted = true;
+  return result;
+}
+
+/**
+ * `changes()`/`subscribeChanges()` only ever carry a flat `StoredDocWire` (one rev,
+ * no ancestry) - no real rev tree crosses with them. `pouchdb-core`'s own
+ * `opts.processChange` (used by `_changes` below) needs *some* `DocMetadata` to call
+ * `pouchdb-merge`'s `isDeleted()` on, so this builds a single-node tree that's
+ * correct for exactly that one rev's deleted flag and nothing more. `opts.conflicts`/
+ * `opts.style === 'all_docs'` need the *real* tree (deferred - see `_changes`'s doc
+ * comment), and will just see this doc's single rev as its own only leaf.
+ */
+function metadataShimFor(doc: StoredDocWire): DocMetadata {
+  const dash = doc.rev.indexOf('-');
+  const pos = Number(doc.rev.slice(0, dash));
+  const id = doc.rev.slice(dash + 1);
+  return { id: doc.id, rev_tree: [{ pos, ids: [id, { deleted: doc.deleted }, []] }] };
+}
+
+/** One `_allDocs` result row, PouchDB's `{id, key, value: {rev, deleted?}, doc?}`
+ * shape. `includeConflicts` only has anything to attach because `allDocs` (unlike
+ * `changes`) already computes real leaf revs server-side - no tree-walking needed. */
+function buildAllDocsRow(row: StoredDocWire, includeBody: boolean, includeConflicts: boolean): Record<string, unknown> {
+  const value: Record<string, unknown> = { rev: row.rev };
+  if (row.deleted) value.deleted = true;
+  const out: Record<string, unknown> = { id: row.id, key: row.id, value };
+  if (includeBody) {
+    if (row.deleted) {
+      out.doc = null;
+    } else {
+      const doc = toPouchDoc(row);
+      if (includeConflicts && row.conflicts && row.conflicts.length > 0) {
+        doc._conflicts = row.conflicts;
+      }
+      out.doc = doc;
+    }
+  }
+  return out;
 }
 
 /** True when a `newEdits` write's parent rev isn't actually present in the existing
@@ -201,8 +269,7 @@ export function NativeAdapter(options: NativeAdapterOptions) {
           if (!getOpts.rev && entry.deleted) throw createError(MISSING_DOC, 'deleted');
 
           const stored = (await call(carrier, 'getDoc', [dbName, id, targetRev])) as StoredDocWire;
-          const doc: Record<string, unknown> = Object.assign({}, stored.body, { _id: id, _rev: stored.rev });
-          if (stored.deleted) doc._deleted = true;
+          const doc = toPouchDoc(stored);
 
           const metadata = { id, rev_tree: JSON.parse(entry.tree), seq: entry.seq, deleted: entry.deleted };
           return { doc, metadata };
@@ -419,8 +486,156 @@ export function NativeAdapter(options: NativeAdapterOptions) {
           return results;
         });
       };
-      this._allDocs = notImplemented('_allDocs', 'spec 03 task 4');
-      this._changes = notImplemented('_changes', 'spec 03 task 4');
+      this._allDocs = (docsOpts: any, docsCallback: Callback): void => {
+        if (typeof docsOpts === 'function') {
+          docsCallback = docsOpts;
+          docsOpts = {};
+        }
+        runAsync(docsCallback, async () => {
+          const includeBody = !!docsOpts.include_docs;
+          const includeConflicts = !!docsOpts.conflicts;
+
+          if (docsOpts.keys) {
+            // One crossing for the whole key list, unlike the reference adapter's
+            // pouchdb-adapter-utils#allDocsKeysQuery, which issues one _allDocs
+            // call per key - native's AllDocsOptions.keys already takes the whole
+            // list directly (spec 02: native "keeps everything set-shaped").
+            const keys: string[] = docsOpts.keys;
+            const wireOpts: AllDocsOptionsWire = { keys, deleted: true, includeBody, includeConflicts };
+            const result = (await call(carrier, 'allDocs', [dbName, wireOpts])) as AllDocsResultWire;
+            const byId = new Map(result.rows.map((row) => [row.id, row]));
+            const rows = keys.map((key) => {
+              const row = byId.get(key);
+              return row ? buildAllDocsRow(row, includeBody, includeConflicts) : { key, error: 'not_found' };
+            });
+            const out: Record<string, unknown> = { total_rows: result.totalRows, offset: docsOpts.skip || 0, rows };
+            if (docsOpts.update_seq) {
+              const info = (await call(carrier, 'info', [dbName])) as StoreInfoWire;
+              out.update_seq = info.updateSeq;
+            }
+            return out;
+          }
+
+          // PouchDB's startkey/endkey keep their literal meaning regardless of
+          // `descending`; native's range bounds are always ascending and
+          // `descending` only reverses fetch order - so a descending query needs
+          // its bounds swapped before crossing, matching the reference adapter's
+          // own "switch start and ends" handling.
+          let startkey = docsOpts.key ?? docsOpts.startkey;
+          let endkey = docsOpts.key ?? docsOpts.endkey;
+          if (docsOpts.descending) [startkey, endkey] = [endkey, startkey];
+
+          const wireOpts: AllDocsOptionsWire = {
+            startkey,
+            endkey,
+            inclusiveEnd: true,
+            limit: docsOpts.limit,
+            skip: docsOpts.skip,
+            descending: !!docsOpts.descending,
+            includeBody,
+            includeConflicts,
+            deleted: docsOpts.deleted === 'ok',
+          };
+          const result = (await call(carrier, 'allDocs', [dbName, wireOpts])) as AllDocsResultWire;
+          // inclusive_end always refers to the literal endkey the caller passed,
+          // not whichever bound native ended up treating as its own "endkey" after
+          // the swap above - so it's enforced here as a row-level exclusion, same
+          // as the reference adapter does, rather than as a native range flag.
+          const filteredRows =
+            docsOpts.inclusive_end === false && docsOpts.endkey != null
+              ? result.rows.filter((row) => row.id !== docsOpts.endkey)
+              : result.rows;
+          const rows = filteredRows.map((row) => buildAllDocsRow(row, includeBody, includeConflicts));
+          const out: Record<string, unknown> = { total_rows: result.totalRows, offset: result.offset, rows };
+          if (docsOpts.update_seq) {
+            const info = (await call(carrier, 'info', [dbName])) as StoreInfoWire;
+            out.update_seq = info.updateSeq;
+          }
+          return out;
+        });
+      };
+
+      this._changes = (changesOpts: any): { cancel: () => void } => {
+        const since = typeof changesOpts.since === 'number' ? changesOpts.since : 0;
+        const filter = filterChange(changesOpts);
+        let cancelled = false;
+
+        function emit(wireDoc: StoredDocWire): void {
+          if (cancelled) return;
+          if (changesOpts.doc_ids && !changesOpts.doc_ids.includes(wireDoc.id)) return;
+          const change: any = changesOpts.processChange(toPouchDoc(wireDoc), metadataShimFor(wireDoc), changesOpts);
+          change.seq = wireDoc.seq;
+          const filtered = filter(change);
+          if (typeof filtered === 'object') {
+            changesOpts.complete(filtered);
+            return;
+          }
+          if (filtered) changesOpts.onChange(change);
+        }
+
+        if (changesOpts.continuous) {
+          const unsubscribe = carrier.subscribeChanges?.(dbName, since, emit);
+          return {
+            cancel: () => {
+              cancelled = true;
+              unsubscribe?.();
+            },
+          };
+        }
+
+        (async () => {
+          try {
+            // A filter function (plain, or a resolved ddoc/view/selector filter -
+            // pouchdb-changes-filter normalizes all of those to a function before
+            // _changes ever sees them) needs the real doc body to evaluate against,
+            // regardless of whether the caller also asked for it in the output -
+            // filterChange() itself strips `change.doc` back off afterward when
+            // `include_docs` wasn't requested.
+            const hasJsFilter = typeof changesOpts.filter === 'function';
+            const needsBody = !!changesOpts.include_docs || hasJsFilter;
+            const wireOpts: ChangesOptionsWire = {
+              since,
+              // native applies `limit` to the pre-filter candidate set, but a JS
+              // filter function rejects docs native has no visibility into - passing
+              // limit through here would silently truncate before the filter ever
+              // runs, losing matches past the cut. Fetch everything and count the
+              // limit against post-filter matches instead, same as the reference
+              // adapter's per-row stream approach.
+              limit: hasJsFilter ? undefined : changesOpts.limit,
+              descending: !!changesOpts.descending,
+              includeBody: needsBody,
+              docIds: changesOpts.doc_ids,
+            };
+            const result = (await call(carrier, 'changes', [dbName, wireOpts])) as ChangesResultWire;
+            if (cancelled) return;
+            const results: unknown[] = [];
+            let lastSeq = since;
+            let matchCount = 0;
+            for (const wireDoc of result.results) {
+              if (cancelled) return;
+              lastSeq = wireDoc.seq;
+              const change: any = changesOpts.processChange(toPouchDoc(wireDoc), metadataShimFor(wireDoc), changesOpts);
+              change.seq = wireDoc.seq;
+              const filtered = filter(change);
+              if (typeof filtered === 'object') {
+                changesOpts.complete(filtered);
+                return;
+              }
+              if (filtered) {
+                matchCount += 1;
+                changesOpts.onChange(change);
+                if (changesOpts.return_docs) results.push(change);
+                if (hasJsFilter && changesOpts.limit && matchCount >= changesOpts.limit) break;
+              }
+            }
+            changesOpts.complete(null, { results, last_seq: hasJsFilter ? lastSeq : result.lastSeq });
+          } catch (err) {
+            changesOpts.complete(err);
+          }
+        })();
+
+        return { cancel: () => { cancelled = true; } };
+      };
       this._doCompaction = notImplemented('_doCompaction', 'spec 03 task 7');
       this._getAttachment = notImplemented('_getAttachment', 'spec 03 task 6');
       this._revsDiff = notImplemented('_revsDiff', 'spec 03 task 5');
