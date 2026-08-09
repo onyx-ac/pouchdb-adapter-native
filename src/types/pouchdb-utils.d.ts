@@ -7,6 +7,18 @@ declare module 'pouchdb-utils' {
   export function uuid(length?: number): string;
 
   /**
+   * Wraps a callback-style adapter method with promise/callback duality,
+   * `taskqueue` readiness, and closed/destroyed checks - the same wrapping
+   * `AbstractPouchDB`'s own default `revsDiff`/`bulkGet` use, needed here because
+   * overriding those two means replacing the whole public method (see `index.ts`'s
+   * `revsDiff`/`bulkGet` doc comment), not implementing an underscore-prefixed hook.
+   */
+  export function adapterFun(
+    name: string,
+    fn: (...args: any[]) => void,
+  ): (...args: any[]) => Promise<unknown> | void;
+
+  /**
    * Builds the `opts.filter`/`include_docs` post-processing step `_changes`
    * implementations are expected to run on every candidate change. Returns `false`
    * to drop the change, `true` to keep it (mutating `change.doc` in place per

@@ -1,7 +1,7 @@
 import { createError, MISSING_DOC, REV_CONFLICT } from 'pouchdb-errors';
 import { parseDoc } from 'pouchdb-adapter-utils';
 import { isDeleted, isLocalId, merge, revExists, winningRev } from 'pouchdb-merge';
-import { filterChange, uuid } from 'pouchdb-utils';
+import { adapterFun, filterChange, uuid } from 'pouchdb-utils';
 import { CONTRACT_VERSION } from './contract.js';
 import type { BridgeError, Carrier, StoredDocWire } from './contract.js';
 import type { ParsedDoc } from 'pouchdb-adapter-utils';
@@ -68,6 +68,16 @@ interface ChangesOptionsWire {
 interface ChangesResultWire {
   lastSeq: number;
   results: StoredDocWire[];
+}
+
+interface RevsDiffEntryWire {
+  missing: string[];
+  possibleAncestors?: string[];
+}
+
+interface BulkGetRequestWire {
+  id: string;
+  rev?: string;
 }
 
 let requestCounter = 0;
@@ -164,6 +174,15 @@ function metadataShimFor(doc: StoredDocWire): DocMetadata {
   const pos = Number(doc.rev.slice(0, dash));
   const id = doc.rev.slice(dash + 1);
   return { id: doc.id, rev_tree: [{ pos, ids: [id, { deleted: doc.deleted }, []] }] };
+}
+
+/** `bulkGet`'s `opts.revs: true` needs a `_revisions` field on the returned doc.
+ * Same single-rev-as-whole-tree simplification `metadataShimFor` already makes -
+ * correct because native only ever hands back one flat rev per result, never a
+ * real ancestry chain. */
+function revisionsField(rev: string): { start: number; ids: string[] } {
+  const dash = rev.indexOf('-');
+  return { start: Number(rev.slice(0, dash)), ids: [rev.slice(dash + 1)] };
 }
 
 /** One `_allDocs` result row, PouchDB's `{id, key, value: {rev, deleted?}, doc?}`
@@ -636,10 +655,83 @@ export function NativeAdapter(options: NativeAdapterOptions) {
 
         return { cancel: () => { cancelled = true; } };
       };
+      /**
+       * `revsDiff`/`bulkGet` have no `_`-prefixed hook in `pouchdb-core` - unlike
+       * every other method here, `AbstractPouchDB`'s constructor assigns them as
+       * concrete public methods (`this.revsDiff = pouchdbUtils.adapterFun(...)`),
+       * with nothing dispatching to `this._revsDiff`/`this._bulkGet` (confirmed by
+       * grepping `pouchdb-core`/`pouchdb-utils`/`pouchdb-adapter-utils` - zero
+       * matches). Overriding means replacing the whole public method, the same way
+       * real adapters like `pouchdb-adapter-http` do - safe here because
+       * `PouchInternal`'s constructor calls `super()` (which sets the defaults)
+       * before it synchronously runs this adapter function, so this assignment
+       * simply overwrites them before `taskqueue.ready()` fires. Wrapped in the
+       * same `pouchdbUtils.adapterFun` the defaults use, so promise/callback
+       * duality and the taskqueue/closed/destroyed checks keep working unchanged.
+       */
+      this.revsDiff = adapterFun(
+        'revsDiff',
+        (req: Record<string, string[]>, revsDiffOpts: any, revsDiffCallback: Callback) => {
+          if (typeof revsDiffOpts === 'function') {
+            revsDiffCallback = revsDiffOpts;
+          }
+          runAsync(revsDiffCallback, async () => {
+            const ids = Object.keys(req);
+            if (!ids.length) return {};
+            const wireResult = (await call(carrier, 'revsDiff', [dbName, req])) as Record<string, RevsDiffEntryWire>;
+            // Native always returns an entry per requested id, even when nothing is
+            // missing (both engines and the fake carrier map every input key
+            // unconditionally). CouchDB/PouchDB's own convention omits ids with
+            // nothing missing from the result entirely - confirmed by reading the
+            // default implementation's own addToMissing-only-inserts-on-miss logic.
+            const result: Record<string, { missing: string[] }> = {};
+            for (const id of ids) {
+              const entry = wireResult[id];
+              if (entry && entry.missing.length > 0) result[id] = { missing: entry.missing };
+            }
+            return result;
+          });
+        },
+      );
+
+      this.bulkGet = adapterFun(
+        'bulkGet',
+        (bulkGetOpts: { docs: Array<{ id: string; rev?: string }>; revs?: boolean }, bulkGetCallback: Callback) => {
+          runAsync(bulkGetCallback, async () => {
+            const wireRequests: BulkGetRequestWire[] = bulkGetOpts.docs.map((d) =>
+              d.rev ? { id: d.id, rev: d.rev } : { id: d.id },
+            );
+            const wireResults = (await call(carrier, 'bulkGet', [dbName, wireRequests])) as StoredDocWire[];
+
+            // Grouped by id, not a plain object - '#5886 bulkGet with reserved id'
+            // uses `_id: 'constructor'`, which a plain-object lookup table would
+            // resolve to Object.prototype.constructor before any assignment.
+            const byId = new Map<string, StoredDocWire[]>();
+            for (const wireDoc of wireResults) {
+              const group = byId.get(wireDoc.id);
+              if (group) group.push(wireDoc);
+              else byId.set(wireDoc.id, [wireDoc]);
+            }
+
+            return {
+              results: bulkGetOpts.docs.map((req) => {
+                const group = byId.get(req.id);
+                const index = group ? (req.rev ? group.findIndex((d) => d.rev === req.rev) : 0) : -1;
+                if (!group || index < 0 || index >= group.length) {
+                  return { id: req.id, docs: [{ error: createError(MISSING_DOC, 'missing') }] };
+                }
+                const [wireDoc] = group.splice(index, 1);
+                const doc = toPouchDoc(wireDoc);
+                if (bulkGetOpts.revs) doc._revisions = revisionsField(wireDoc.rev);
+                return { id: req.id, docs: [{ ok: doc }] };
+              }),
+            };
+          });
+        },
+      );
+
       this._doCompaction = notImplemented('_doCompaction', 'spec 03 task 7');
       this._getAttachment = notImplemented('_getAttachment', 'spec 03 task 6');
-      this._revsDiff = notImplemented('_revsDiff', 'spec 03 task 5');
-      this._bulkGet = notImplemented('_bulkGet', 'spec 03 task 5');
       this._destroy = notImplemented('_destroy', 'spec 03 task 7');
       this._close = notImplemented('_close', 'spec 03 task 7');
 
