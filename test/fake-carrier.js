@@ -54,7 +54,13 @@ function createFakeCarrier() {
   const handlers = {
     info([db]) {
       const d = existingDb(db);
-      return { docCount: d ? d.docs.size : 0, updateSeq: d ? d.seqCounter : 0 };
+      if (!d) return { docCount: 0, updateSeq: 0 };
+      let docCount = 0;
+      for (const record of d.docs.values()) {
+        const winning = record.revisions.get(record.winningRev);
+        if (!winning || !winning.deleted) docCount++;
+      }
+      return { docCount, updateSeq: d.seqCounter };
     },
 
     getDoc([db, id, rev]) {
@@ -86,9 +92,18 @@ function createFakeCarrier() {
     bulkWrite([db, ops]) {
       const d = dbFor(db);
       const results = [];
+      // A batch touching the same id twice must have the second op see the first
+      // op's write, not the pre-batch state - so reads below go through this map
+      // (mirrors docstack-store's own same-batch chaining requirement).
+      const pending = new Map();
       for (const op of ops) {
+        const existing = pending.has(op.id) ? pending.get(op.id) : (d.docs.get(op.id) ?? null);
+        const expected = op.expectedPrevWinningRev ?? null;
+        if ((existing ? existing.winningRev : null) !== expected) {
+          results.push(null);
+          continue;
+        }
         const seq = ++d.seqCounter;
-        const existing = d.docs.get(op.id);
         if (existing) d.bySeq.delete(existing.seq);
         const revisions = existing ? new Map(existing.revisions) : new Map();
         revisions.set(op.rev, {
@@ -96,7 +111,9 @@ function createFakeCarrier() {
           deleted: !!op.deleted,
           attachmentDigests: op.attachmentDigests || [],
         });
-        d.docs.set(op.id, { tree: op.tree, winningRev: op.winningRev, seq, revisions });
+        const record = { tree: op.tree, winningRev: op.winningRev, seq, revisions };
+        d.docs.set(op.id, record);
+        pending.set(op.id, record);
         d.bySeq.set(seq, op.id);
         for (const digest of op.attachmentDigests || []) {
           const existingAttachment = d.attachments.get(digest);
@@ -109,11 +126,13 @@ function createFakeCarrier() {
       }
       notify(
         db,
-        results.map((r) => {
-          const record = d.docs.get(r.id);
-          const winning = record.revisions.get(record.winningRev);
-          return toStoredDoc(r.id, record.winningRev, record.seq, winning);
-        }),
+        results
+          .filter((r) => r !== null)
+          .map((r) => {
+            const record = d.docs.get(r.id);
+            const winning = record.revisions.get(record.winningRev);
+            return toStoredDoc(r.id, record.winningRev, record.seq, winning);
+          }),
       );
       return results;
     },
